@@ -65,10 +65,15 @@ def run_c2pa_command_for_fmp4(init_file, fragments_glob, output_dir, manifest_fi
             print(f"Failed to fix permissions: {str(e)}")
             return False, f"Failed to fix permissions for {c2patool_path}: {str(e)}"
     
+    #c2patool mtleclipse009.jpg 
+    #-m sample/test3.json 
+    # --signer-path dist/test -o ./output/test.jpg -f
     command = [
         c2patool_path,
         "-m",
         manifest_file,
+        "--signer-path",
+        "dist/test",
         "-o",
         output_dir,
         init_file,

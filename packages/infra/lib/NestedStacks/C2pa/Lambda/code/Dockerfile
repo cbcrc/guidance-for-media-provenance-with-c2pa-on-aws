@@ -56,6 +56,14 @@ RUN microdnf install -y --setopt=install_weak_deps=0 --best \
 # Copy lambda function code
 COPY index.py ${LAMBDA_TASK_ROOT}/
 COPY utils.py ${LAMBDA_TASK_ROOT}/
+COPY dist/test ${LAMBDA_TASK_ROOT}/dist/
+COPY logo.png ${LAMBDA_TASK_ROOT}/
+RUN chmod 755 ${LAMBDA_TASK_ROOT}/dist/test
+RUN chmod 755 ${LAMBDA_TASK_ROOT}/logo.png
+
+
+RUN echo "Lambda function code and dependencies copied successfully."
+RUN ls -la ${LAMBDA_TASK_ROOT}
 
 # The AWS Lambda base image already has the runtime interface client
 # We just need to ensure our code is in the right location and the handler is set correctly
