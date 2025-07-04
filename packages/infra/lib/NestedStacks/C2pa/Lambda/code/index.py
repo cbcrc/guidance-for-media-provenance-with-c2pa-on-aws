@@ -6,7 +6,7 @@ import glob
 import boto3
 import tempfile
 import mimetypes
-
+from hashlib import sha256
 from urllib import request
 from os.path import splitext, dirname, basename, join as path_join
 from urllib.parse import urlparse
@@ -23,7 +23,7 @@ from aws_lambda_powertools.logging import correlation_paths
 from aws_lambda_powertools.utilities.typing import LambdaContext
 from aws_lambda_powertools.event_handler import LambdaFunctionUrlResolver
 from aws_lambda_powertools.event_handler.exceptions import ServiceError
-
+import base64
 
 
 tracer = Tracer()
@@ -38,7 +38,28 @@ output_bucket = os.environ["output_bucket"]
 certificate = os.environ["certificate"]
 private_key = os.environ["private_key"]
 
-
+def sign_bytes(data):
+    """Signs the data using the private key and specified algorithm
+    aws kms sign \
+    --key-id aws_kms_key_id \
+    --message $MESSAGE \
+    --message-type RAW \
+    --signing-algorithm RSASSA_PSS_SHA_256 \
+    --output text \
+    --query Signature
+    """
+    digest_data = sha256(data).digest()
+    client = boto3.client('kms')
+    response = client.sign(
+        KeyId='alias/aws/c2pa-signing-key', # Use your KMS key alias or ID
+        Message=digest_data,
+        MessageType='DIGEST', #bigger than 4096 bytes
+        SigningAlgorithm='RSASSA_PSS_SHA_256'    
+    )
+    if 'Signature' not in response:
+        raise ValueError("Signature not found in the response from KMS")
+    
+    return response['Signature']
 
 class SignFileEvent(BaseModel):
     new_title: str
@@ -60,20 +81,30 @@ def sign_file(signFileEvent: SignFileEvent):
     manifest_json = json.dumps(
         {
             "title": new_title,
+            "claim_generator_info": [
+                {
+                    "name": "CBC/Radio-Canada",
+                    "version": "0.1.1",
+                    "icon": {
+                        "format": "image/png",
+                        "identifier": "icon_resource",
+                    }
+                }
+            ],
             "assertions": [
                 {
                     "label": "stds.schema-org.CreativeWork",
                     "data": {
                         "@context": "http://schema.org/",
                         "@type": "CreativeWork",
-                        "author": [{"@type": "Person", "name": "AWS C2PA Guidance"}],
+                        "author": [{"@type": "Person", "name": "CBC/Radio-Canada"}],
+                        "datePublished": datetime.now().isoformat(),
                     },
                     "kind": "Json",
                 },
                 *assertions_json,
             ],
-            "thumbnail": {"format": extension[1:], "identifier": "thumbnail"},
-            "claim_generator_info": [{"name": "c2pa-python", "version": "0.6.1"}],
+            "thumbnail": {"format": extension[1:], "identifier": "thumbnail"}
         }
     )
     builder = c2pa.Builder(manifest_json)
@@ -81,6 +112,7 @@ def sign_file(signFileEvent: SignFileEvent):
     # Add New Image Thumbnail
     thumbnail = request.urlopen(asset_url)
     builder.add_resource("thumbnail", thumbnail)
+    builder.add_resource_file("icon_resource", "/var/task/logo.png")
     logger.info("Thumbnail added")
 
     # Add Ingredients
@@ -105,19 +137,13 @@ def sign_file(signFileEvent: SignFileEvent):
 
             logger.info(f"Ingredient added: {ingredient_filename}")
 
-    # Load the Key
-    prv_key_value = secretsmanager.get_secret_value(SecretId=private_key)
-    key = prv_key_value["SecretString"].encode("utf-8")
-
-    def private_sign(data: bytes) -> bytes:
-        return c2pa.sign_ps256(data, key)
 
     # Load the Certificate
     cert_value = secretsmanager.get_secret_value(SecretId=certificate)
     cert = cert_value["SecretString"].encode("utf-8")
 
     signer = c2pa.create_signer(
-        private_sign, c2pa.SigningAlg.PS256, cert, "http://timestamp.digicert.com"
+        sign_bytes, c2pa.SigningAlg.PS256, cert, "http://timestamp.digicert.com"
     )
     logger.info("Signer added")
 
@@ -368,7 +394,7 @@ def read_file(readFileEvent: ReadFileEvent):
         filename = url_config.path.split("/").pop()
         filename_no_extension, extension = splitext(filename)
         
-        # Get the file content
+        # Get the file content based on the URL scheme
         if asset_url.startswith("http"):
             logger.info(f"Reading from HTTP URL: {asset_url}")
             file_content = io.BytesIO(request.urlopen(asset_url).read())
